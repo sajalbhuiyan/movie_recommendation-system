@@ -1,3 +1,25 @@
+import os
+import requests
+
+def download_from_gdrive(gdrive_url, dest_path):
+    file_id = gdrive_url.split('/d/')[1].split('/')[0]
+    download_url = f"https://drive.google.com/uc?export=download&id={file_id}"
+    response = requests.get(download_url, stream=True)
+    with open(dest_path, "wb") as f:
+        for chunk in response.iter_content(chunk_size=8192):
+            if chunk:
+                f.write(chunk)
+
+# Download required .pkl files if not present
+files_to_download = [
+    ("https://drive.google.com/file/d/1aUNbwWu3gOhb2rPQJacu1yAJoNZfHfAC/view?usp=sharing", "movie_list.pkl"),
+    ("https://drive.google.com/file/d/1vNeQkY_GfAh6xfWLydssSvh6ErRSi4Ep/view?usp=sharing", "similarity.pkl"),
+    ("https://drive.google.com/file/d/1ILsFbv8WWf-5ElXV7B37oj3PwJR3-gPJ/view?usp=sharing", "svd_model.pkl"),
+]
+for url, filename in files_to_download:
+    if not os.path.exists(filename):
+        print(f"Downloading {filename} from Google Drive...")
+        download_from_gdrive(url, filename)
 import streamlit as st
 from sqlalchemy import create_engine, text
 
@@ -27,15 +49,118 @@ except Exception as e:
 
 # Sidebar navigation
 with st.sidebar:
-    nav = st.radio("Navigation", ["Home", "Discover", "Mood-Based", "Watchlist", "History", "Sign In"], key="nav_radio")
+    nav = st.radio("Navigation", ["Home", "Discover", "Mood-Based", "Watchlist", "History", "Analytics", "Profile", "Sign In"], key="nav_radio")
     if st.session_state.get("current_username"):
         if st.button("Sign Out"):
             st.session_state.current_user = None
             st.session_state.current_username = None
-            st.session_state.page = "Home"
+            st.session_state.page = "Home"      
 
 # Main page routing
-if nav == "Sign In" or st.session_state.get("page") == "Sign In":
+if nav == "Profile":
+    st.title("User Profile")
+    if st.session_state.get("current_user"):
+        user_id = st.session_state.current_user
+        username = st.session_state.get("current_username", str(user_id))
+        st.markdown(f"**Username:** {username}")
+        st.markdown(f"**User ID:** {user_id}")
+        import pandas as pd, os
+        ratings_count = 0
+        avg_rating = None
+        if os.path.exists("user_reviews.csv"):
+            reviews_df = pd.read_csv("user_reviews.csv", header=0)
+            user_reviews = reviews_df[reviews_df["user"].astype(str) == str(user_id)]
+            ratings_count = len(user_reviews)
+            if ratings_count > 0:
+                avg_rating = user_reviews["rating"].astype(float).mean()
+        st.markdown(f"**Number of Ratings:** {ratings_count}")
+        if avg_rating is not None:
+            st.markdown(f"**Average Rating:** {avg_rating:.2f}")
+        if st.button("Edit Info"):
+            st.info("Feature coming soon: Edit profile info.")
+    else:
+        st.warning("Please sign in to view your profile.")
+    st.stop()
+elif nav == "Analytics":
+    st.title("Analytics & Insights")
+    import pandas as pd
+    import matplotlib.pyplot as plt
+    import seaborn as sns
+    import os
+    # Rating histogram
+    if os.path.exists("user_reviews.csv"):
+        reviews_df = pd.read_csv("user_reviews.csv", header=0)
+        st.subheader("Rating Distribution")
+        fig, ax = plt.subplots()
+        sns.histplot(reviews_df["rating"].astype(float), bins=5, kde=True, ax=ax)
+        ax.set_xlabel("Rating")
+        ax.set_ylabel("Count")
+        st.pyplot(fig)
+
+        # Ratings per user (top raters)
+        st.subheader("Ratings per User (Top Raters)")
+        user_counts = reviews_df["user"].value_counts().head(10)
+        fig_user, ax_user = plt.subplots()
+        ax_user.bar(user_counts.index.astype(str), user_counts.values)
+        ax_user.set_xlabel("User")
+        ax_user.set_ylabel("Number of Ratings")
+        plt.xticks(rotation=45)
+        st.pyplot(fig_user)
+
+        # Number of reviews per movie (top reviewed movies)
+        st.subheader("Number of Reviews per Movie (Top Reviewed)")
+        movie_counts = reviews_df["title"].value_counts().head(10)
+        fig_movie, ax_movie = plt.subplots()
+        ax_movie.bar(movie_counts.index.astype(str), movie_counts.values)
+        ax_movie.set_xlabel("Movie Title")
+        ax_movie.set_ylabel("Number of Reviews")
+        plt.xticks(rotation=45)
+        st.pyplot(fig_movie)
+
+        # Top genres bar chart & average rating per genre
+        if os.path.exists("movies.csv") and "movie_id" in reviews_df:
+            movies_df = pd.read_csv("movies.csv")
+            # Map movie_id to genres
+            genre_counts = {}
+            genre_ratings = {}
+            for _, row in reviews_df.iterrows():
+                mid = int(row["movie_id"])
+                genres = []
+                if "genres" in movies_df.columns:
+                    genres_str = movies_df[movies_df["id"] == mid]["genres"].values
+                    if len(genres_str) > 0:
+                        import ast #Abstract Syntax Trees.
+                        try:
+                            genres = [g["name"] for g in ast.literal_eval(genres_str[0]) if "name" in g]
+                        except Exception:
+                            pass
+                for g in genres:
+                    genre_counts[g] = genre_counts.get(g, 0) + 1
+                    genre_ratings.setdefault(g, []).append(float(row["rating"]))
+            if genre_counts:
+                st.subheader("Top Genres by Ratings")
+                fig2, ax2 = plt.subplots()
+                genres_sorted = sorted(genre_counts.items(), key=lambda x: x[1], reverse=True)
+                ax2.bar([g for g, _ in genres_sorted], [c for _, c in genres_sorted])
+                ax2.set_xlabel("Genre")
+                ax2.set_ylabel("Number of Ratings")
+                plt.xticks(rotation=45)
+                st.pyplot(fig2)
+            if genre_ratings:
+                st.subheader("Average Rating per Genre")
+                avg_ratings = {g: sum(r)/len(r) for g, r in genre_ratings.items() if len(r) > 0}
+                genres_sorted = sorted(avg_ratings.items(), key=lambda x: x[1], reverse=True)
+                fig3, ax3 = plt.subplots()
+                ax3.bar([g for g, _ in genres_sorted], [r for _, r in genres_sorted])
+                ax3.set_xlabel("Genre")
+                ax3.set_ylabel("Average Rating")
+                plt.xticks(rotation=45)
+                st.pyplot(fig3)
+
+    else:
+        st.info("No ratings data found. Please rate some movies first.")
+    st.stop()
+elif nav == "Sign In" or st.session_state.get("page") == "Sign In":
     st.title("Sign In / Sign Up")
     tab1, tab2 = st.tabs(["Sign In", "Sign Up"])
     with tab1:
@@ -105,76 +230,125 @@ movies, similarity, svd_model = load_pickles()
 
 # Custom CSS for dark theme, styling, and watchlist/history cards
 st.markdown("""
-    <style>
-    body {
-        background-color: #121212;
-        color: white;
-    }
-    .stApp {
-        background-color: #121212;
-        color: white;
-    }
-    h1, h2, h3 {
-        color: white;
-    }
-    .stButton>button {
-        background-color: #4a4a4a;
-        color: white;
-        border-radius: 5px;
-    }
-    .stTextInput>div>input, .stSelectbox>div>select {
-        background-color: #2a2a2a;
-        color: white;
-        border-radius: 5px;
-    }
-    .genre-button {
-        background-color: #2a2a2a;
-        color: white;
-        border-radius: 15px;
-        padding: 5px 15px;
-        margin: 5px;
-        display: inline-block;
-    }
+<style>
+body {
+    background-color: #121212;
+    color: white;
+    margin: 0;
+    padding: 0;
+}
+.stApp {
+    background-color: #121212;
+    color: white;
+}
+h1, h2, h3 {
+    color: white;
+}
+.stButton>button {
+    background-color: #4a4a4a;
+    color: white;
+    border-radius: 5px;
+    width: 100%;
+    min-width: 80px;
+    font-size: 1em;
+}
+.stTextInput>div>input, .stSelectbox>div>select {
+    background-color: #2a2a2a;
+    color: white;
+    border-radius: 5px;
+    width: 100%;
+    font-size: 1em;
+}
+.genre-button {
+    background-color: #2a2a2a;
+    color: white;
+    border-radius: 15px;
+    padding: 5px 15px;
+    margin: 5px;
+    display: inline-block;
+    font-size: 1em;
+}
+.movie-card {
+    background-color: #1e1e1e;
+    border-radius: 10px;
+    padding: 10px;
+    margin: 10px auto;
+    width: 100%;
+    max-width: 320px;
+    display: block;
+    vertical-align: top;
+    box-sizing: border-box;
+}
+.movie-card img {
+    width: 100%;
+    height: auto;
+    border-radius: 10px;
+}
+.watchlist-container, .history-container {
+    display: flex;
+    flex-wrap: wrap;
+    overflow-x: auto;
+    white-space: normal;
+    padding: 10px 0;
+}
+.nav-bar {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px;
+    background-color: #1a1a1a;
+}
+.nav-links button {
+    background: none;
+    border: none;
+    color: white;
+    margin: 0 15px;
+    text-decoration: none;
+    cursor: pointer;
+    font-size: 1em;
+}
+.sign-in-btn {
+    background-color: #333;
+    color: white;
+    padding: 5px 15px;
+    border-radius: 5px;
+    text-decoration: none;
+    border: none;
+    cursor: pointer;
+    font-size: 1em;
+}
+@media (max-width: 900px) {
     .movie-card {
-        background-color: #1e1e1e;
-        border-radius: 10px;
-        padding: 10px;
-        margin: 10px;
-        width: 200px;
-        display: inline-block;
-        vertical-align: top;
-    }
-    .watchlist-container, .history-container {
-        display: flex;
-        overflow-x: auto;
-        white-space: nowrap;
-        padding: 10px 0;
+        max-width: 90vw;
+        margin: 10px auto;
     }
     .nav-bar {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        padding: 10px;
-        background-color: #1a1a1a;
+        flex-direction: column;
+        align-items: flex-start;
     }
     .nav-links button {
-        background: none;
-        border: none;
-        color: white;
-        margin: 0 15px;
-        text-decoration: none;
-        cursor: pointer;
+        margin: 5px 0;
     }
-    .sign-in-btn {
-        background-color: #333;
-        color: white;
-        padding: 5px 15px;
-        border-radius: 5px;
-        text-decoration: none;
-        border: none;
-        cursor: pointer;
+}
+@media (max-width: 600px) {
+    .movie-card {
+        max-width: 98vw;
+        margin: 10px auto;
+        font-size: 0.95em;
     }
-    </style>
+    h1, h2, h3 {
+        font-size: 1.2em;
+    }
+    .nav-bar {
+        padding: 5px;
+    }
+    .stButton>button, .sign-in-btn {
+        font-size: 0.95em;
+        padding: 8px 10px;
+    }
+}
+</style>
 """, unsafe_allow_html=True)
 
 # Cache TMDB API calls for performance
@@ -532,10 +706,20 @@ def recommend_collaborative(user_id):
         st.error("Collaborative recommendations unavailable due to missing data.")
         return [], []
     try:
+        # Get movies already rated by the user
+        rated_movie_ids = set()
+        if os.path.exists("user_reviews.csv"):
+            reviews_df = pd.read_csv("user_reviews.csv", header=0)
+            reviews_df['user'] = reviews_df['user'].astype(str)
+            uid = str(user_id)
+            rated_movie_ids = set(reviews_df[reviews_df['user'] == uid]['movie_id'].astype(int).tolist())
+
+        # Predict ratings for movies not yet rated
+        predictions = [(movie_id, svd_model.predict(user_id, movie_id).est)
+                       for movie_id in movies['id'] if movie_id not in rated_movie_ids]
+        predictions = sorted(predictions, key=lambda x: x[1], reverse=True)
         recommended_names = []
         recommended_posters = []
-        predictions = [(movie_id, svd_model.predict(user_id, movie_id).est) for movie_id in movies['id']]
-        predictions = sorted(predictions, key=lambda x: x[1], reverse=True)
         for movie_id, _ in predictions[:3]:
             movie_title = movies[movies['id'] == movie_id]['title'].iloc[0]
             recommended_names.append(movie_title)
@@ -572,11 +756,11 @@ def recommend_hybrid(movie_title, user_id, num_recommendations=3, content_weight
             collab_score = collab_scores.get(name, 0.0) * (1.0 - content_weight)
             combined_scores[name] = content_score + collab_score
         
-        # Sort by combined score
-        top_movies = sorted(combined_scores.items(), key=lambda x: x[1], reverse=True)[:num_recommendations]
+        # Sort by combined score and exclude the input movie
+        filtered_scores = [(name, score) for name, score in combined_scores.items() if name != movie_title]
+        top_movies = sorted(filtered_scores, key=lambda x: x[1], reverse=True)[:num_recommendations]
         recommended_names = []
         recommended_posters = []
-        
         for name, _ in top_movies:
             if name in content_names:
                 idx = content_names.index(name)
@@ -890,13 +1074,21 @@ if st.session_state.page == "home":
                 with col3:
                     if trailer_url:
                         if st.button("Watch Trailer", key=f"trailer_pop_{movie['id']}"):
-                            st.write(f"[Watch Trailer]({trailer_url})")
+                            st.markdown(f'<a href="{trailer_url}" target="_blank">Watch Trailer</a>', unsafe_allow_html=True)
                 if st.session_state.get(f"show_rating_{movie['id']}", False):
                     rating = st.slider(f"Rate {movie['title']} (1-5)", 1, 5, key=f"rating_pop_{movie['id']}")
-                    if st.button("Submit Rating", key=f"submit_rating_pop_{movie['id']}"):
+                    review = st.text_area(f"Write a review for {movie['title']}", key=f"review_pop_{movie['id']}")
+                    if st.button("Submit Rating & Review", key=f"submit_rating_pop_{movie['id']}"):
                         if st.session_state.current_user:
                             save_user_activity(st.session_state.current_user, "rated", movie['title'], movie['id'], rating)
-                            st.success(f"Rated {movie['title']} with {rating} stars!")
+                            import csv, os
+                            file_exists = os.path.exists("user_reviews.csv")
+                            with open("user_reviews.csv", "a", newline='', encoding='utf-8') as f:
+                                writer = csv.writer(f)
+                                if not file_exists:
+                                    writer.writerow(["user","movie_id","title","rating","review"])
+                                writer.writerow([st.session_state.current_user, movie['id'], movie['title'], rating, review])
+                            st.success(f"Rated {movie['title']} with {rating} stars and review submitted!")
                             st.session_state[f"show_rating_{movie['id']}"] = False
                         else:
                             st.warning("Please sign in to rate movies.")
@@ -908,7 +1100,7 @@ elif st.session_state.page == "discover":
         user_id = st.session_state.current_user if st.session_state.current_user else 1
         movie_list = movies['title'].dropna().unique()
         selected_movie = st.selectbox("🎥 Pick a movie for recommendations", movie_list)
-        col1, col2, col3 = st.columns(3)
+        col1, col2, col3, col4 = st.columns(4)
         with col1:
             if st.button("Get Content-Based Recommendations", key="content_based"):
                 if selected_movie in movie_list:
@@ -942,6 +1134,53 @@ elif st.session_state.page == "discover":
                     st.session_state.recommendation_type = "hybrid"
                 else:
                     st.error("Could not generate hybrid recommendations.")
+        with col4:
+            if st.button("Get Personalized Recommendations", key="personalized"):
+                try:
+                    import pandas as pd
+                    import os
+                    top_rated = []
+                    csv_path = "user_reviews.csv"
+                    if os.path.exists(csv_path):
+                        reviews_df = pd.read_csv(csv_path, header=0)
+                        # Normalize user id comparison (string/int)
+                        reviews_df['user'] = reviews_df['user'].astype(str)
+                        uid = str(st.session_state.current_user) if st.session_state.get('current_user') is not None else None
+                        if uid:
+                            user_reviews = reviews_df[reviews_df['user'] == uid]
+                            if not user_reviews.empty:
+                                top_rated = user_reviews.sort_values('rating', ascending=False).head(5)['title'].tolist()
+
+                    if not top_rated:
+                        st.warning("No ratings found for your account. Please rate some movies first.")
+                        st.session_state.show_recommendations = True
+                        popular = fetch_popular_movies()[:5]
+                        st.session_state.recommended_names = [m['title'] for m in popular]
+                        st.session_state.recommended_posters = [m['poster'] for m in popular]
+                        st.session_state.recommendation_type = "popular"
+                    else:
+                        personalized_names = []
+                        personalized_posters = []
+                        for title in top_rated:
+                            names, posters = recommend_content_based(title)
+                            for n, p in zip(names, posters):
+                                if n not in personalized_names:
+                                    personalized_names.append(n)
+                                    personalized_posters.append(p)
+                        if personalized_names:
+                            st.session_state.show_recommendations = True
+                            st.session_state.recommended_names = personalized_names
+                            st.session_state.recommended_posters = personalized_posters
+                            st.session_state.recommendation_type = "personalized"
+                        else:
+                            st.warning("No personalized recommendations found. Showing popular movies instead.")
+                            st.session_state.show_recommendations = True
+                            popular = fetch_popular_movies()[:5]
+                            st.session_state.recommended_names = [m['title'] for m in popular]
+                            st.session_state.recommended_posters = [m['poster'] for m in popular]
+                            st.session_state.recommendation_type = "popular"
+                except Exception as e:
+                    st.error(f"Error loading ratings from CSV: {e}")
     else:
         st.warning("No movies loaded from .pkl file. Please ensure the file is correct.")
 
@@ -977,35 +1216,53 @@ elif st.session_state.page == "discover":
                         <h3>{movie['title']}</h3>
                         <p>⭐ {movie['rating']:.1f}</p>
                         <p>{movie['description'][:100]}...</p>
-                        <div style='height: 8px;'></div>
-                        <div style='width: 100%;'>
-                            <div style='display: flex; gap: 8px; width: 100%;'>
-                                <div style='flex:1;'>
-                                    {st.button('Watch Now', key=f'watch_genre_{movie["id"]}')}
-                                </div>
-                                <div style='flex:1;'>
-                                    {st.button('Add to Watchlist', key=f'watchlist_genre_{movie["id"]}')}
-                                </div>
-                                <div style='flex:1;'>
-                                    {st.button('Watch Trailer', key=f'trailer_genre_{movie["id"]}')}
-                                </div>
-                            </div>
-                        </div>
                     </div>
                 """, unsafe_allow_html=True)
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.button('Watch Now', key=f'watch_genre_{movie["id"]}')
+                with col2:
+                    st.button('Add to Watchlist', key=f'watchlist_genre_{movie["id"]}')
+                with col3:
+                    if trailer_url:
+                        st.markdown(f'<a href="{trailer_url}" target="_blank">Watch Trailer</a>', unsafe_allow_html=True)
                 if st.session_state.get(f"show_rating_{movie['id']}", False):
                     rating = st.slider(f"Rate {movie['title']} (1-5)", 1, 5, key=f"rating_genre_{movie['id']}")
-                    if st.button("Submit Rating", key=f"submit_rating_genre_{movie['id']}"):
+                    review = st.text_area(f"Write a review for {movie['title']}", key=f"review_genre_{movie['id']}")
+                    if st.button("Submit Rating & Review", key=f"submit_rating_genre_{movie['id']}"):
                         if st.session_state.current_user:
                             save_user_activity(st.session_state.current_user, "rated", movie['title'], movie['id'], rating)
-                            st.success(f"Rated {movie['title']} with {rating} stars!")
+                            import csv
+                            import os
+                            file_exists = os.path.exists("user_reviews.csv")
+                            with open("user_reviews.csv", "a", newline='', encoding='utf-8') as f:
+                                writer = csv.writer(f)
+                                if not file_exists:
+                                    writer.writerow(["user","movie_id","title","rating","review"])
+                                writer.writerow([st.session_state.current_user, movie['id'], movie['title'], rating, review])
+                            st.success(f"Rated {movie['title']} with {rating} stars and review submitted!")
                             st.session_state[f"show_rating_{movie['id']}"] = False
                         else:
                             st.warning("Please sign in to rate movies.")
+                    # Display recent reviews and average rating
+                    import pandas as pd
+                    try:
+                        reviews_df = pd.read_csv("user_reviews.csv", header=0)
+                        movie_reviews = reviews_df[reviews_df["movie_id"] == movie['id']]
+                        if not movie_reviews.empty:
+                            avg_rating = movie_reviews["rating"].astype(float).mean()
+                            st.markdown(f"**Average Rating:** {avg_rating:.1f} ⭐")
+                            st.markdown("**Recent Reviews:**")
+                            for _, row in movie_reviews.tail(3).iterrows():
+                                st.markdown(f"- *{row['user']}*: {row['review']} ({row['rating']}⭐)")
+                    except Exception:
+                        pass
 
     if search_query and not movies.empty:
         st.session_state.show_recommendations = False
         st.session_state.selected_genre = None
+        # remember last search and provide recommendations based on it
+        st.session_state.last_search = search_query
         filtered_movies = movies[movies['title'].str.contains(search_query, case=False, na=False)]
         if not filtered_movies.empty:
             cols = st.columns(3)
@@ -1021,32 +1278,52 @@ elif st.session_state.page == "discover":
                             <h3>{movie.title}</h3>
                             <p>⭐ {rating:.1f}</p>
                             <p>{description[:100]}...</p>
-                            <div style='height: 8px;'></div>
-                            <div style='width: 100%;'>
-                                <div style='display: flex; gap: 8px; width: 100%;'>
-                                    <div style='flex:1;'>
-                                        {st.button('Watch Now', key=f'watch_search_{movie.id}')}
-                                    </div>
-                                    <div style='flex:1;'>
-                                        {st.button('Add to Watchlist', key=f'watchlist_search_{movie.id}')}
-                                    </div>
-                                    <div style='flex:1;'>
-                                        {st.button('Watch Trailer', key=f'trailer_search_{movie.id}')}
-                                    </div>
-                                </div>
-                            </div>
                         </div>
                     """, unsafe_allow_html=True)
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        if st.button('Watch Now', key=f'watch_search_{movie.id}'):
+                            if st.session_state.current_user:
+                                save_user_activity(st.session_state.current_user, "watched", movie.title, movie.id)
+                                st.session_state[f"rating_movie_{movie.id}"] = movie.title
+                                st.session_state[f"show_rating_{movie.id}"] = True
+                                st.session_state[f"rating_movie_id_{movie.id}"] = movie.id
+                            else:
+                                st.warning("Please sign in to watch movies.")
+                    with col2:
+                        st.button('Add to Watchlist', key=f'watchlist_search_{movie.id}')
+                    with col3:
+                        if trailer_url:
+                            st.markdown(f'<a href="{trailer_url}" target="_blank">Watch Trailer</a>', unsafe_allow_html=True)
                     if st.session_state.get(f"show_rating_{movie.id}", False):
                         rating = st.slider(f"Rate {movie.title} (1-5)", 1, 5, key=f"rating_search_{movie.id}")
-                        if st.button("Submit Rating", key=f"submit_rating_search_{movie.id}"):
+                        review = st.text_area(f"Write a review for {movie.title}", key=f"review_search_{movie.id}")
+                        if st.button("Submit Rating & Review", key=f"submit_rating_search_{movie.id}"):
                             if st.session_state.current_user:
                                 save_user_activity(st.session_state.current_user, "rated", movie.title, movie.id, rating)
-                                st.success(f"Rated {movie.title} with {rating} stars!")
+                                import csv, os
+                                file_exists = os.path.exists("user_reviews.csv")
+                                with open("user_reviews.csv", "a", newline='', encoding='utf-8') as f:
+                                    writer = csv.writer(f)
+                                    if not file_exists:
+                                        writer.writerow(["user","movie_id","title","rating","review"])
+                                    writer.writerow([st.session_state.current_user, movie.id, movie.title, rating, review])
+                                st.success(f"Rated {movie.title} with {rating} stars and review submitted!")
                                 st.session_state[f"show_rating_{movie.id}"] = False
                             else:
                                 st.warning("Please sign in to rate movies.")
 
+            # Generate recommendations based on first matched search result
+            try:
+                first_title = filtered_movies.head(1)['title'].iloc[0]
+                names, posters = recommend_content_based(first_title)
+                if names:
+                    st.session_state.show_recommendations = True
+                    st.session_state.recommended_names = names
+                    st.session_state.recommended_posters = posters
+                    st.session_state.recommendation_type = "search"
+            except Exception:
+                pass
     if st.session_state.show_recommendations:
         recommended_names = st.session_state.recommended_names
         recommended_posters = st.session_state.recommended_posters
@@ -1095,14 +1372,22 @@ elif st.session_state.page == "discover":
                 with col3:
                     if trailer_url:
                         if st.button("Watch Trailer", key=f"trailer_rec_{idx}_{movie_id}"):
-                            st.write(f"[Watch Trailer]({trailer_url})")
+                            st.markdown(f'<a href="{trailer_url}" target="_blank">Watch Trailer</a>', unsafe_allow_html=True)
                 if st.session_state.get(f"show_rating_{movie_id}", False):
                     rating = st.slider(f"Rate {name} (1-5)", 1, 5, key=f"rating_rec_{movie_id}")
-                    if st.button("Submit Rating", key=f"submit_rating_rec_{movie_id}"):
+                    review = st.text_area(f"Write a review for {name}", key=f"review_rec_{movie_id}")
+                    if st.button("Submit Rating & Review", key=f"submit_rating_rec_{movie_id}"):
                         if st.session_state.current_user:
                             if movie_id:
                                 save_user_activity(st.session_state.current_user, "rated", name, movie_id, rating)
-                                st.success(f"Rated {name} with {rating} stars!")
+                                import csv, os
+                                file_exists = os.path.exists("user_reviews.csv")
+                                with open("user_reviews.csv", "a", newline='', encoding='utf-8') as f:
+                                    writer = csv.writer(f)
+                                    if not file_exists:
+                                        writer.writerow(["user","movie_id","title","rating","review"])
+                                    writer.writerow([st.session_state.current_user, movie_id, name, rating, review])
+                                st.success(f"Rated {name} with {rating} stars and review submitted!")
                                 st.session_state[f"show_rating_{movie_id}"] = False
                             else:
                                 st.error("Cannot rate this movie: Movie ID not found.")
@@ -1148,13 +1433,21 @@ elif st.session_state.page == "discover":
                     with col3:
                         if trailer_url:
                             if st.button("Watch Trailer", key=f"trailer_{movie.id}"):
-                                st.write(f"[Watch Trailer]({trailer_url})")
+                                st.markdown(f'<a href="{trailer_url}" target="_blank">Watch Trailer</a>', unsafe_allow_html=True)
                     if st.session_state.get(f"show_rating_{movie.id}", False):
                         rating = st.slider(f"Rate {movie.title} (1-5)", 1, 5, key=f"rating_default_{movie.id}")
-                        if st.button("Submit Rating", key=f"submit_rating_default_{movie.id}"):
+                        review = st.text_area(f"Write a review for {movie.title}", key=f"review_default_{movie.id}")
+                        if st.button("Submit Rating & Review", key=f"submit_rating_default_{movie.id}"):
                             if st.session_state.current_user:
                                 save_user_activity(st.session_state.current_user, "rated", movie.title, movie.id, rating)
-                                st.success(f"Rated {movie.title} with {rating} stars!")
+                                import csv, os
+                                file_exists = os.path.exists("user_reviews.csv")
+                                with open("user_reviews.csv", "a", newline='', encoding='utf-8') as f:
+                                    writer = csv.writer(f)
+                                    if not file_exists:
+                                        writer.writerow(["user","movie_id","title","rating","review"])
+                                    writer.writerow([st.session_state.current_user, movie.id, movie.title, rating, review])
+                                st.success(f"Rated {movie.title} with {rating} stars and review submitted!")
                                 st.session_state[f"show_rating_{movie.id}"] = False
                             else:
                                 st.warning("Please sign in to rate movies.")
@@ -1236,13 +1529,21 @@ elif st.session_state.page == "mood":
                 with col3:
                     if trailer_url:
                         if st.button("Watch Trailer", key=f"trailer_mood_{movie['id']}"):
-                            st.write(f"[Watch Trailer]({trailer_url})")
+                            st.markdown(f'<a href="{trailer_url}" target="_blank">Watch Trailer</a>', unsafe_allow_html=True)
                 if st.session_state.get(f"show_rating_{movie['id']}", False):
                     rating = st.slider(f"Rate {movie['title']} (1-5)", 1, 5, key=f"rating_mood_{movie['id']}")
-                    if st.button("Submit Rating", key=f"submit_rating_mood_{movie['id']}"):
+                    review = st.text_area(f"Write a review for {movie['title']}", key=f"review_mood_{movie['id']}")
+                    if st.button("Submit Rating & Review", key=f"submit_rating_mood_{movie['id']}"):
                         if st.session_state.current_user:
                             save_user_activity(st.session_state.current_user, "rated", movie['title'], movie['id'], rating)
-                            st.success(f"Rated {movie['title']} with {rating} stars!")
+                            import csv, os
+                            file_exists = os.path.exists("user_reviews.csv")
+                            with open("user_reviews.csv", "a", newline='', encoding='utf-8') as f:
+                                writer = csv.writer(f)
+                                if not file_exists:
+                                    writer.writerow(["user","movie_id","title","rating","review"])
+                                writer.writerow([st.session_state.current_user, movie['id'], movie['title'], rating, review])
+                            st.success(f"Rated {movie['title']} with {rating} stars and review submitted!")
                             st.session_state[f"show_rating_{movie['id']}"] = False
                         else:
                             st.warning("Please sign in to rate movies.")
@@ -1251,9 +1552,45 @@ elif st.session_state.page == "mood":
 
 elif st.session_state.page == "watchlist":
     st.markdown("<h2>Watchlist</h2>", unsafe_allow_html=True)
+    # Notification feature: alert for new movies matching interests
+    import pandas as pd
+    import os
     if st.session_state.current_user:
+        # Get user's favorite genres from top-rated movies
+        try:
+            reviews_df = pd.read_csv("user_reviews.csv", header=0)
+            user_reviews = reviews_df[reviews_df["user"] == st.session_state.current_user]
+            top_rated_ids = user_reviews.sort_values("rating", ascending=False).head(5)["movie_id"].tolist()
+            favorite_genres = set()
+            for mid in top_rated_ids:
+                details = fetch_movie_details(mid)
+                genre = details.get("genre")
+                if genre:
+                    favorite_genres.add(genre)
+            # Check for new movies in those genres
+            notified_file = f"notified_{st.session_state.current_user}.txt"
+            notified_ids = set()
+            if os.path.exists(notified_file):
+                with open(notified_file) as f:
+                    notified_ids = set(f.read().splitlines())
+            new_movies = movies[movies["genre"].isin(favorite_genres) & ~movies["id"].astype(str).isin(notified_ids)]
+            if not new_movies.empty:
+                st.info(f"New movies added in your favorite genres: {', '.join(new_movies['title'].head(3))}")
+                # Mark as notified
+                with open(notified_file, "a") as f:
+                    for mid in new_movies["id"].astype(str).head(3):
+                        f.write(mid + "\n")
+        except Exception:
+            pass
         if st.session_state.watchlist:
             st.markdown("<div class='watchlist-container'>", unsafe_allow_html=True)
+            # Social sharing feature
+            watchlist_titles = [item["title"] for item in st.session_state.watchlist]
+            share_text = "My Watchlist: " + ", ".join(watchlist_titles)
+            st.text_area("Share your watchlist:", value=share_text, height=50)
+            st.button("Copy to Clipboard", on_click=lambda: st.session_state.update({"copied": True}))
+            if st.session_state.get("copied"):
+                st.success("Watchlist copied! You can share it with friends.")
             cols = st.columns(3)
             for idx, item in enumerate(st.session_state.watchlist):
                 with cols[idx % 3]:
@@ -1263,6 +1600,9 @@ elif st.session_state.page == "watchlist":
                     trailer_url = fetch_trailer(movie_id) if movie_id else None
                     rating = movies[movies['id'] == movie_id]['vote_average'].iloc[0] if not movies.empty and movie_id in movies['id'].values and 'vote_average' in movies and pd.notna(movies[movies['id'] == movie_id]['vote_average'].iloc[0]) else fetch_movie_details(movie_id)['rating']
                     description = movies[movies['id'] == movie_id]['overview'].iloc[0] if not movies.empty and movie_id in movies['id'].values and 'overview' in movies and pd.notna(movies[movies['id'] == movie_id]['overview'].iloc[0]) else fetch_movie_details(movie_id)['description']
+                    # Movie Details Link
+                    if st.button(f"Details: {movie}", key=f"details_wl_{movie_id}_{idx}"):
+                        st.session_state.selected_movie_details = movie_id
                     st.markdown(f"""
                         <div class="movie-card">
                             <img src="{poster}" style="width: 100%; border-radius: 10px;">
@@ -1291,14 +1631,52 @@ elif st.session_state.page == "watchlist":
                     with col3:
                         if trailer_url:
                             if st.button("Trailer", key=f"trailer_wl_{movie_id}_{idx}"):
-                                st.write(f"[Watch Trailer]({trailer_url})")
+                                st.markdown(f'<a href="{trailer_url}" target="_blank">Watch Trailer</a>', unsafe_allow_html=True)
                     if st.session_state.get(f"show_rating_{movie_id}", False):
                         rating = st.slider(f"Rate {movie} (1-5)", 1, 5, key=f"rating_wl_{movie_id}_{idx}")
-                        if st.button("Submit Rating", key=f"submit_rating_wl_{movie_id}_{idx}"):
+                        review = st.text_area(f"Write a review for {movie}", key=f"review_wl_{movie_id}_{idx}")
+                        if st.button("Submit Rating & Review", key=f"submit_rating_wl_{movie_id}_{idx}"):
                             save_user_activity(st.session_state.current_user, "rated", movie, movie_id, rating)
-                            st.success(f"Rated {movie} with {rating} stars!")
+                            import csv, os
+                            file_exists = os.path.exists("user_reviews.csv")
+                            with open("user_reviews.csv", "a", newline='', encoding='utf-8') as f:
+                                writer = csv.writer(f)
+                                if not file_exists:
+                                    writer.writerow(["user","movie_id","title","rating","review"])
+                                writer.writerow([st.session_state.current_user, movie_id, movie, rating, review])
+                            st.success(f"Rated {movie} with {rating} stars and review submitted!")
                             st.session_state[f"show_rating_{movie_id}"] = False
             st.markdown("</div>", unsafe_allow_html=True)
+            # Movie Details Page
+            if st.session_state.get("selected_movie_details"):
+                movie_id = st.session_state.selected_movie_details
+                details = fetch_movie_details(movie_id)
+                st.markdown(f"## Movie Details")
+                st.image(fetch_poster(movie_id), width=200)
+                st.markdown(f"**Title:** {details.get('title', '')}")
+                st.markdown(f"**Release Date:** {details.get('release_date', 'N/A')}")
+                st.markdown(f"**Director:** {details.get('director', 'N/A')}")
+                st.markdown(f"**Cast:** {details.get('cast', 'N/A')}")
+                st.markdown(f"**Description:** {details.get('description', '')}")
+                st.markdown(f"**Rating:** {details.get('rating', 'N/A')}")
+                trailer_url = fetch_trailer(movie_id)
+                if trailer_url:
+                    st.markdown(f'<a href="{trailer_url}" target="_blank">Watch Trailer</a>', unsafe_allow_html=True)
+                # Show reviews
+                import pandas as pd
+                try:
+                    reviews_df = pd.read_csv("user_reviews.csv", header=0)
+                    movie_reviews = reviews_df[reviews_df["movie_id"] == movie_id]
+                    if not movie_reviews.empty:
+                        avg_rating = movie_reviews["rating"].astype(float).mean()
+                        st.markdown(f"**Average Rating:** {avg_rating:.1f} ⭐")
+                        st.markdown("**Recent Reviews:**")
+                        for _, row in movie_reviews.tail(5).iterrows():
+                            st.markdown(f"- *{row['user']}*: {row['review']} ({row['rating']}⭐)")
+                except Exception:
+                    pass
+                if st.button("Back to Watchlist", key="back_to_watchlist"):
+                    st.session_state.selected_movie_details = None
         else:
             st.info("Your watchlist is empty.")
     else:
