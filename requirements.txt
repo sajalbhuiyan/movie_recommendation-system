@@ -1,12 +1,11 @@
-setuptools
-wheel
+setuptools==69.5.1
+wheel==0.43.0
 streamlit==1.48.0
 pandas==2.3.1
 numpy==1.25.2
 scikit-learn==1.7.1
 sqlalchemy==2.0.43
 mysql-connector-python==9.4.0
-requests==2.32.4
 matplotlib==3.10.5
 seaborn==0.13.2
 bcrypt==4.3.0
