@@ -20,31 +20,10 @@ for url, filename in files_to_download:
     if not os.path.exists(filename):
         print(f"Downloading {filename} from Google Drive...")
         download_from_gdrive(url, filename)
+
 import streamlit as st
-from sqlalchemy import create_engine, text
 
-# Database connection
 
-@st.cache_resource
-def get_engine():
-    return create_engine('mysql+mysqlconnector://root:sajal2375@127.0.0.1:3306/sajal')
-
-engine = get_engine()
-
-# Create users table if not exists
-create_table_query = """
-CREATE TABLE IF NOT EXISTS users (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    email VARCHAR(255) UNIQUE NOT NULL,
-    password VARCHAR(255) NOT NULL
-)
-"""
-try:
-    with engine.begin() as conn:
-        conn.execute(text(create_table_query))
-except Exception as e:
-    import streamlit as st
-    st.error(f"Error creating users table: {e}")
 
 
 # Sidebar navigation
@@ -160,6 +139,7 @@ elif nav == "Analytics":
     else:
         st.info("No ratings data found. Please rate some movies first.")
     st.stop()
+
 elif nav == "Sign In" or st.session_state.get("page") == "Sign In":
     st.title("Sign In / Sign Up")
     tab1, tab2 = st.tabs(["Sign In", "Sign Up"])
@@ -168,16 +148,10 @@ elif nav == "Sign In" or st.session_state.get("page") == "Sign In":
         signin_email = st.text_input("Email", key="signin_email")
         signin_password = st.text_input("Password", type="password", key="signin_password")
         if st.button("Sign In", key="signin_btn"):
-            # Basic authentication logic (replace with your backend logic)
-            user = None
-            try:
-                with engine.begin() as conn:
-                    result = conn.execute(text("SELECT * FROM users WHERE email=:email AND password=:password"), {"email": signin_email, "password": signin_password})
-                    user = result.fetchone()
-            except Exception as e:
-                st.error(f"Error during sign in: {e}")
-            if user:
-                st.session_state.current_user = user[0]
+            users = load_users_from_csv()
+            user = users.get(signin_email)
+            if user and bcrypt.checkpw(signin_password.encode(), user["password"].encode()):
+                st.session_state.current_user = user["user_id"]
                 st.session_state.current_username = signin_email
                 st.session_state.page = "home"
                 st.success("Signed in successfully!")
@@ -188,13 +162,13 @@ elif nav == "Sign In" or st.session_state.get("page") == "Sign In":
         signup_email = st.text_input("Email", key="signup_email")
         signup_password = st.text_input("Password", type="password", key="signup_password")
         if st.button("Sign Up", key="signup_btn"):
-            # Basic registration logic (replace with your backend logic)
-            try:
-                with engine.begin() as conn:
-                    conn.execute(text("INSERT INTO users (email, password) VALUES (:email, :password)"), {"email": signup_email, "password": signup_password})
+            users = load_users_from_csv()
+            if signup_email in users:
+                st.error("Email already registered. Please sign in.")
+            else:
+                new_user_id = max([u["user_id"] for u in users.values()], default=0) + 1
+                save_user_to_csv(signup_email, signup_password, new_user_id)
                 st.success("Account created! Please sign in.")
-            except Exception as e:
-                st.error(f"Error during sign up: {e}")
     st.stop()
 
 # ...existing code for other sections (Home, Discover, Mood-Based, Watchlist, History)...
@@ -215,16 +189,38 @@ import bcrypt
 # TMDB API Key (use environment variable for security)
 TMDB_API_KEY = os.getenv("TMDB_API_KEY", "9ef5ae6fc8b8f484e9295dc97d8d32ea")
 
+
 @st.cache_resource
 def load_pickles():
-    try:
-        movies = pickle.load(open('movie_list.pkl', 'rb'))
-        similarity = pickle.load(open('similarity.pkl', 'rb'))
-        svd_model = pickle.load(open('svd_model.pkl', 'rb'))
-        return movies, similarity, svd_model
-    except FileNotFoundError:
-        st.error("Could not find 'movie_list.pkl', 'similarity.pkl', or 'svd_model.pkl'. .")
-        return pd.DataFrame(), None, None
+    import time
+    def robust_pickle_load(filename, url):
+        # Check file exists and is not empty
+        if not os.path.exists(filename) or os.path.getsize(filename) < 1000:
+            st.warning(f"{filename} missing or too small, attempting to download...")
+            download_from_gdrive(url, filename)
+            time.sleep(1)
+        try:
+            with open(filename, 'rb') as f:
+                return pickle.load(f)
+        except Exception as e:
+            # Print first 100 bytes for debugging
+            try:
+                with open(filename, 'rb') as f:
+                    first_bytes = f.read(100)
+                st.error(f"Failed to load {filename}: {e}. First bytes: {first_bytes}")
+            except Exception as e2:
+                st.error(f"Failed to load {filename}: {e}. Also failed to read file: {e2}")
+            return None
+
+    files = [
+        ("movie_list.pkl", "https://drive.google.com/file/d/1aUNbwWu3gOhb2rPQJacu1yAJoNZfHfAC/view?usp=sharing"),
+        ("similarity.pkl", "https://drive.google.com/file/d/1vNeQkY_GfAh6xfWLydssSvh6ErRSi4Ep/view?usp=sharing"),
+        ("svd_model.pkl", "https://drive.google.com/file/d/1ILsFbv8WWf-5ElXV7B37oj3PwJR3-gPJ/view?usp=sharing"),
+    ]
+    loaded = [robust_pickle_load(fname, url) for fname, url in files]
+    if any(x is None for x in loaded):
+        st.error("One or more model files could not be loaded. See above for details.")
+    return tuple(loaded)
 
 movies, similarity, svd_model = load_pickles()
 
@@ -1737,15 +1733,10 @@ elif st.session_state.page == "signin":
         signin_password = st.text_input("Password", type="password", key="signin_password")
         login_failed = False
         if st.button("Sign In", key="signin_btn"):
-            user = None
-            try:
-                with engine.begin() as conn:
-                    result = conn.execute(text("SELECT * FROM users WHERE email=:email AND password=:password"), {"email": signin_email, "password": signin_password})
-                    user = result.fetchone()
-            except Exception as e:
-                st.error(f"Error during sign in: {e}")
-            if user:
-                st.session_state.current_user = user[0]
+            users = load_users_from_csv()
+            user = users.get(signin_email)
+            if user and bcrypt.checkpw(signin_password.encode(), user["password"].encode()):
+                st.session_state.current_user = user["user_id"]
                 st.session_state.current_username = signin_email
                 st.session_state.page = "home"
                 st.success("Signed in successfully!")
@@ -1761,13 +1752,14 @@ elif st.session_state.page == "signin":
         signup_email = st.text_input("Email", key="signup_email")
         signup_password = st.text_input("Password", type="password", key="signup_password")
         if st.button("Sign Up", key="signup_btn"):
-            try:
-                with engine.begin() as conn:
-                    conn.execute(text("INSERT INTO users (email, password) VALUES (:email, :password)"), {"email": signup_email, "password": signup_password})
+            users = load_users_from_csv()
+            if signup_email in users:
+                st.error("Email already registered. Please sign in.")
+            else:
+                new_user_id = max([u["user_id"] for u in users.values()], default=0) + 1
+                save_user_to_csv(signup_email, signup_password, new_user_id)
                 st.success("Account created! Please sign in.")
                 st.session_state.show_signup = False
-            except Exception as e:
-                st.error(f"Error during sign up: {e}")
         if st.button("Back to Sign In", key="back_to_signin"):
             st.session_state.show_signup = False
     st.stop()
