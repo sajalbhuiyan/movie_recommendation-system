@@ -2,11 +2,22 @@ import os
 import requests
 
 def download_from_gdrive(gdrive_url, dest_path):
-    file_id = gdrive_url.split('/d/')[1].split('/')[0]
-    download_url = f"https://drive.google.com/uc?export=download&id={file_id}"
-    response = requests.get(download_url, stream=True)
+    import re
+    session = requests.Session()
+    file_id_match = re.search(r'/d/([\w-]+)', gdrive_url)
+    if not file_id_match:
+        raise ValueError(f"Invalid Google Drive URL: {gdrive_url}")
+    file_id = file_id_match.group(1)
+    base_url = "https://drive.google.com/uc?export=download"
+    response = session.get(base_url, params={"id": file_id}, stream=True)
+    token = None
+    for key, value in response.cookies.items():
+        if key.startswith('download_warning'):
+            token = value
+    if token:
+        response = session.get(base_url, params={"id": file_id, "confirm": token}, stream=True)
     with open(dest_path, "wb") as f:
-        for chunk in response.iter_content(chunk_size=8192):
+        for chunk in response.iter_content(chunk_size=32768):
             if chunk:
                 f.write(chunk)
 
