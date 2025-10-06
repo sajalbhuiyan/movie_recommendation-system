@@ -1,138 +1,63 @@
 import os
-import re
 import requests
-import pickle
-import streamlit as st
-import pandas as pd
 
-# -----------------------------
-# Function to download from Google Drive
-# -----------------------------
-def download_file(url, dest_path, timeout=30):
-    """Download file from S3/direct URL or Google Drive (handles confirm token).
+def download_from_gdrive(gdrive_url, dest_path):
+    """Download either from Google Drive (handles confirm token) or a direct URL (S3).
 
-    Returns True on success, False otherwise.
+    If the URL contains 'drive.google.com' or 'docs.google.com' the Drive flow is used,
+    otherwise a simple requests.get streaming download is performed.
     """
-    try:
-        session = requests.Session()
-        # Google Drive handling
-        if "drive.google.com" in url or "docs.google.com" in url:
-            file_id_match = re.search(r'/d/([a-zA-Z0-9_-]+)', url)
-            if not file_id_match:
-                st.error(f"Invalid Google Drive URL: {url}")
-                return False
-            file_id = file_id_match.group(1)
-            base_url = "https://docs.google.com/uc?export=download"
-            resp = session.get(base_url, params={"id": file_id}, stream=True, timeout=timeout)
-            token = None
-            for key, value in resp.cookies.items():
-                if key.startswith('download_warning'):
-                    token = value
-            if token:
-                resp = session.get(base_url, params={"id": file_id, "confirm": token}, stream=True, timeout=timeout)
-        else:
-            resp = session.get(url, stream=True, timeout=timeout)
-
+    import re
+    session = requests.Session()
+    # If it's not a Google Drive URL, do a normal GET (works for S3/public URLs)
+    if "drive.google.com" not in gdrive_url and "docs.google.com" not in gdrive_url:
+        resp = session.get(gdrive_url, stream=True)
         resp.raise_for_status()
-
-        # Write file
         with open(dest_path, "wb") as f:
             for chunk in resp.iter_content(chunk_size=32768):
                 if chunk:
                     f.write(chunk)
+        return
 
-        # Basic validation: check first bytes not HTML
-        with open(dest_path, 'rb') as f:
-            first = f.read(64)
-        if first.lstrip().startswith(b'<'):
-            # looks like HTML
-            st.error(f"Downloaded content for {dest_path} looks like HTML (not a binary file). First bytes: {first[:120]}")
-            return False
+    # Google Drive URL flow
+    file_id_match = re.search(r'/d/([\w-]+)', gdrive_url)
+    if not file_id_match:
+        raise ValueError(f"Invalid Google Drive URL: {gdrive_url}")
+    file_id = file_id_match.group(1)
+    base_url = "https://drive.google.com/uc?export=download"
+    response = session.get(base_url, params={"id": file_id}, stream=True)
+    token = None
+    for key, value in response.cookies.items():
+        if key.startswith('download_warning'):
+            token = value
+    if token:
+        response = session.get(base_url, params={"id": file_id, "confirm": token}, stream=True)
+    with open(dest_path, "wb") as f:
+        for chunk in response.iter_content(chunk_size=32768):
+            if chunk:
+                f.write(chunk)
 
-        st.info(f"Downloaded {dest_path}")
-        return True
-    except Exception as e:
-        st.error(f"Error downloading {dest_path} from {url}: {e}")
-        return False
-
-
-# -----------------------------
-# List of required files
-# -----------------------------
+# Download required .pkl files if not present
 files_to_download = [
-    ("https://<your-s3-or-direct-url>/movie_list.pkl", "movie_list.pkl"),
-    ("https://<your-s3-or-direct-url>/similarity.pkl", "similarity.pkl"),
-    ("https://<your-s3-or-direct-url>/svd_model.pkl", "svd_model.pkl"),
+    ("https://movie-recommendation-files.s3.us-east-1.amazonaws.com/movie_list.pkl", "movie_list.pkl"),
+    ("https://movie-recommendation-files.s3.us-east-1.amazonaws.com/similarity.pkl", "similarity.pkl"),
+    ("https://movie-recommendation-files.s3.us-east-1.amazonaws.com/svd_model.pkl", "svd_model.pkl"),
 ]
-
-
-def ensure_file(url, filename):
-    # If file exists and seems >1KB, assume okay
-    if os.path.exists(filename) and os.path.getsize(filename) > 1024:
-        return True
-    # Attempt download
-    ok = download_file(url, filename)
-    if not ok:
-        st.warning(f"Initial download failed for {filename}")
-        return False
-    return True
-
-
-def load_with_retry(filename, url, retries=1):
-    for attempt in range(retries + 1):
-        if not ensure_file(url, filename):
-            continue
+for url, filename in files_to_download:
+    if not os.path.exists(filename):
+        print(f"Downloading {filename} from {url}...")
         try:
-            with open(filename, 'rb') as f:
-                return pickle.load(f)
+            download_from_gdrive(url, filename)
         except Exception as e:
-            st.warning(f"Failed to load {filename} on attempt {attempt}: {e}")
-            # If downloaded HTML or corrupted, try re-downloading once
-            if attempt < retries:
-                try:
-                    os.remove(filename)
-                except Exception:
-                    pass
-                continue
-    return None
+            print(f"Failed to download {filename}: {e}")
 
-
-# Load models (replace URLs with your hosted file URLs)
-movie_list = load_with_retry(files_to_download[0][1], files_to_download[0][0], retries=1)
-similarity = load_with_retry(files_to_download[1][1], files_to_download[1][0], retries=1)
-svd_model = load_with_retry(files_to_download[2][1], files_to_download[2][0], retries=1)
-
-def _is_valid_model(obj):
-    # None is invalid
-    if obj is None:
-        return False
-    # pandas DataFrame: check not empty
-    try:
-        import pandas as _pd
-        if isinstance(obj, _pd.DataFrame):
-            return not obj.empty
-    except Exception:
-        pass
-    # sequences/collections: check length
-    try:
-        if hasattr(obj, '__len__'):
-            return len(obj) > 0
-    except Exception:
-        pass
-    # otherwise assume valid
-    return True
-
-if not all(_is_valid_model(x) for x in [movie_list, similarity, svd_model]):
-    st.error("One or more model files could not be loaded. See logs above for details.")
-else:
-    st.success("All model files loaded successfully!")
-
-
-
+import streamlit as st
 
 # -----------------------------
-# CSV user helper functions (moved above UI so Sign In/Sign Up can use them)
+# CSV user helper functions (defined early so UI can use them)
+# -----------------------------
 def save_user_to_csv(username, password, user_id):
+    import os, csv, bcrypt, pandas as pd
     try:
         file_exists = os.path.exists("users.csv")
         hashed_password = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
@@ -147,6 +72,7 @@ def save_user_to_csv(username, password, user_id):
 
 
 def load_users_from_csv():
+    import os, csv, pandas as pd
     if os.path.exists("users.csv"):
         try:
             users_df = pd.read_csv(
@@ -162,6 +88,9 @@ def load_users_from_csv():
             st.warning(f"Error loading users: {e}. Starting with empty user list.")
             return {}
     return {}
+
+
+
 
 # Sidebar navigation
 with st.sidebar:
@@ -327,10 +256,39 @@ import bcrypt
 TMDB_API_KEY = os.getenv("TMDB_API_KEY", "9ef5ae6fc8b8f484e9295dc97d8d32ea")
 
 
-# Assign loaded models to variables used throughout the app
-movies = movie_list if movie_list is not None else pd.DataFrame()
-similarity = similarity
-svd_model = svd_model
+@st.cache_resource
+def load_pickles():
+    import time
+    def robust_pickle_load(filename, url):
+        # Check file exists and is not empty
+        if not os.path.exists(filename) or os.path.getsize(filename) < 1000:
+            st.warning(f"{filename} missing or too small, attempting to download...")
+            download_from_gdrive(url, filename)
+            time.sleep(1)
+        try:
+            with open(filename, 'rb') as f:
+                return pickle.load(f)
+        except Exception as e:
+            # Print first 100 bytes for debugging
+            try:
+                with open(filename, 'rb') as f:
+                    first_bytes = f.read(100)
+                st.error(f"Failed to load {filename}: {e}. First bytes: {first_bytes}")
+            except Exception as e2:
+                st.error(f"Failed to load {filename}: {e}. Also failed to read file: {e2}")
+            return None
+
+    files = [
+        ("movie_list.pkl", "https://drive.google.com/file/d/1aUNbwWu3gOhb2rPQJacu1yAJoNZfHfAC/view?usp=sharing"),
+        ("similarity.pkl", "https://drive.google.com/file/d/1vNeQkY_GfAh6xfWLydssSvh6ErRSi4Ep/view?usp=sharing"),
+        ("svd_model.pkl", "https://drive.google.com/file/d/1ILsFbv8WWf-5ElXV7B37oj3PwJR3-gPJ/view?usp=sharing"),
+    ]
+    loaded = [robust_pickle_load(fname, url) for fname, url in files]
+    if any(x is None for x in loaded):
+        st.error("One or more model files could not be loaded. See above for details.")
+    return tuple(loaded)
+
+movies, similarity, svd_model = load_pickles()
 
 # Custom CSS for dark theme, styling, and watchlist/history cards
 st.markdown("""
@@ -999,7 +957,37 @@ def save_user_activity(user_id, action, movie_title, movie_id, rating=None):
     except Exception as e:
         st.warning(f"Error saving user activity: {e}")
 
-# ... CSV helpers defined earlier ...
+# Save user to CSV
+def save_user_to_csv(username, password, user_id):
+    try:
+        file_exists = os.path.exists("users.csv")
+        hashed_password = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+        user_data = pd.DataFrame([{
+            "username": str(username),
+            "password": hashed_password,
+            "user_id": int(user_id)
+        }])
+        user_data.to_csv("users.csv", mode='a', index=False, header=not file_exists, quoting=csv.QUOTE_NONNUMERIC)
+    except Exception as e:
+        st.error(f"Error saving user to CSV: {e}")
+
+# Load users from CSV
+def load_users_from_csv():
+    if os.path.exists("users.csv"):
+        try:
+            users_df = pd.read_csv(
+                "users.csv",
+                dtype={"username": str, "password": str, "user_id": int},
+                quoting=csv.QUOTE_NONNUMERIC
+            )
+            users = {}
+            for _, row in users_df.iterrows():
+                users[row['username']] = {"password": row['password'], "user_id": row['user_id']}
+            return users
+        except Exception as e:
+            st.warning(f"Error loading users: {e}. Starting with empty user list.")
+            return {}
+    return {}
 
 # Save watchlist to CSV
 def save_watchlist_to_csv(user_id, movie_title, movie_id):
