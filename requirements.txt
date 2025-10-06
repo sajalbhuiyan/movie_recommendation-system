@@ -10,4 +10,7 @@ matplotlib==3.10.0
 seaborn==0.13.2
 bcrypt==4.3.0
 requests==2.32.4
-scikit-surprise==1.1.3
+# scikit-surprise removed because it requires compiling C extensions on the build host.
+# If you need it, use a runtime with prebuilt wheels (python 3.10) or install separately.
+
+# Python runtime is set in runtime.txt (e.g. python-3.10.12)
