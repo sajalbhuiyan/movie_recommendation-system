@@ -1,38 +1,47 @@
 # -----------------------------
-# Dockerfile for Movie Recommendation System
+# 1) Use Python 3.9 base image
 # -----------------------------
+FROM python:3.9-slim
 
-# Use Python 3.10 slim image
-FROM python:3.10-slim
-
-# Set working directory
+# -----------------------------
+# 2) Set working directory
+# -----------------------------
 WORKDIR /app
 
-# Install system dependencies required for building some Python packages
+# -----------------------------
+# 3) Install system dependencies for building Python packages
+# -----------------------------
 RUN apt-get update && apt-get install -y \
     build-essential \
+    python3-dev \
     gcc \
-    libffi-dev \
-    libssl-dev \
+    gfortran \
+    libblas-dev \
+    liblapack-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements
+# -----------------------------
+# 4) Copy requirements first (for caching)
+# -----------------------------
 COPY requirements.txt .
 
-# Upgrade pip and install Python dependencies
+# -----------------------------
+# 5) Upgrade pip and install Python dependencies
+# -----------------------------
 RUN pip install --upgrade pip setuptools wheel \
-    && pip install -r requirements.txt
+    && pip install --no-cache-dir -r requirements.txt
 
-# Copy project files
+# -----------------------------
+# 6) Copy the rest of the app
+# -----------------------------
 COPY . .
 
-# Expose port for Streamlit
+# -----------------------------
+# 7) Expose the port your app runs on
+# -----------------------------
 EXPOSE 8501
 
-# Set Streamlit config to allow running inside Docker
-ENV STREAMLIT_SERVER_HEADLESS=true
-ENV STREAMLIT_SERVER_PORT=8501
-ENV STREAMLIT_SERVER_ADDRESS=0.0.0.0
-
-# Command to run the app
-CMD ["streamlit", "run", "app.py"]
+# -----------------------------
+# 8) Start your app
+# -----------------------------
+CMD ["streamlit", "run", "app.py", "--server.port=8501", "--server.address=0.0.0.0"]
