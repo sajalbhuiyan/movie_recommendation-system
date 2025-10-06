@@ -262,7 +262,11 @@ def load_pickles():
     def robust_pickle_load(filename, url):
         # Check file exists and is not empty
         if not os.path.exists(filename) or os.path.getsize(filename) < 1000:
-            st.warning(f"{filename} missing or too small, attempting to download...")
+            # record silently for diagnostics
+            try:
+                st.session_state.setdefault('model_load_errors', []).append(f"{filename} missing or too small, attempting to download...")
+            except Exception:
+                pass
             download_from_gdrive(url, filename)
             time.sleep(1)
         # Read first bytes to detect which module the pickle references.
@@ -270,7 +274,10 @@ def load_pickles():
             with open(filename, 'rb') as f:
                 first_bytes = f.read(512)
         except Exception as e:
-            st.error(f"Failed to read {filename}: {e}")
+            try:
+                st.session_state.setdefault('model_load_errors', []).append(f"Failed to read {filename}: {e}")
+            except Exception:
+                pass
             return None
 
         # Quick heuristic: if the pickle references the 'surprise' package but
@@ -280,7 +287,10 @@ def load_pickles():
             try:
                 import importlib
                 if importlib.util.find_spec('surprise') is None:
-                    st.warning(f"{filename} appears to be a Surprise model (needs scikit-surprise). 'surprise' is not installed; skipping load.")
+                    try:
+                        st.session_state.setdefault('model_load_errors', []).append(f"{filename} appears to be a Surprise model (needs scikit-surprise). 'surprise' is not installed; skipping load.")
+                    except Exception:
+                        pass
                     return None
             except Exception:
                 # If importlib check fails for any reason, fall through to try unpickling
@@ -292,11 +302,17 @@ def load_pickles():
                 return pickle.load(f)
         except ModuleNotFoundError as e:
             # Common case: pickle references a missing package (like surprise)
-            st.warning(f"Module required to unpickle {filename} is missing: {e}. Skipping load.")
+            try:
+                st.session_state.setdefault('model_load_errors', []).append(f"Module required to unpickle {filename} is missing: {e}. Skipping load.")
+            except Exception:
+                pass
             return None
         except Exception as e:
-            # Print first 200 bytes for debugging
-            st.error(f"Failed to load {filename}: {e}. First bytes: {first_bytes[:200]}")
+            # Save debug info to session_state instead of printing
+            try:
+                st.session_state.setdefault('model_load_errors', []).append(f"Failed to load {filename}: {e}. First bytes: {first_bytes[:200]}")
+            except Exception:
+                pass
             return None
 
     files = [
@@ -305,21 +321,15 @@ def load_pickles():
         ("svd_model.pkl", "https://drive.google.com/file/d/1ILsFbv8WWf-5ElXV7B37oj3PwJR3-gPJ/view?usp=sharing"),
     ]
     loaded = [robust_pickle_load(fname, url) for fname, url in files]
-    if any(x is None for x in loaded):
-        st.error("One or more model files could not be loaded. See above for details.")
+    # keep silent on missing model files; errors collected in st.session_state['model_load_errors']
     return tuple(loaded)
 
 movies, similarity, svd_model = load_pickles()
 
-# Show SVD/model status in the sidebar so it's obvious when the Surprise model
-# wasn't loaded and the app is using fallback recommendations.
+# Keep a silent flag in session_state for diagnostics (not shown to users)
 try:
-    if svd_model is None:
-        st.sidebar.warning("SVD model not available — using popularity/content fallback for collaborative recommendations.")
-    else:
-        st.sidebar.success("SVD model loaded — full collaborative recommendations enabled.")
+    st.session_state['svd_loaded'] = bool(svd_model is not None)
 except Exception:
-    # If sidebar isn't available in this context, safely ignore
     pass
 
 # Custom CSS for dark theme, styling, and watchlist/history cards
