@@ -311,6 +311,17 @@ def load_pickles():
 
 movies, similarity, svd_model = load_pickles()
 
+# Show SVD/model status in the sidebar so it's obvious when the Surprise model
+# wasn't loaded and the app is using fallback recommendations.
+try:
+    if svd_model is None:
+        st.sidebar.warning("SVD model not available — using popularity/content fallback for collaborative recommendations.")
+    else:
+        st.sidebar.success("SVD model loaded — full collaborative recommendations enabled.")
+except Exception:
+    # If sidebar isn't available in this context, safely ignore
+    pass
+
 # Custom CSS for dark theme, styling, and watchlist/history cards
 st.markdown("""
 <style>
