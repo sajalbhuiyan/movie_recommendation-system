@@ -265,17 +265,38 @@ def load_pickles():
             st.warning(f"{filename} missing or too small, attempting to download...")
             download_from_gdrive(url, filename)
             time.sleep(1)
+        # Read first bytes to detect which module the pickle references.
+        try:
+            with open(filename, 'rb') as f:
+                first_bytes = f.read(512)
+        except Exception as e:
+            st.error(f"Failed to read {filename}: {e}")
+            return None
+
+        # Quick heuristic: if the pickle references the 'surprise' package but
+        # scikit-surprise isn't installed, avoid attempting to unpickle because
+        # it will raise a ModuleNotFoundError and clutter logs.
+        if b'surprise' in first_bytes:
+            try:
+                import importlib
+                if importlib.util.find_spec('surprise') is None:
+                    st.warning(f"{filename} appears to be a Surprise model (needs scikit-surprise). 'surprise' is not installed; skipping load.")
+                    return None
+            except Exception:
+                # If importlib check fails for any reason, fall through to try unpickling
+                pass
+
+        # Attempt actual unpickle
         try:
             with open(filename, 'rb') as f:
                 return pickle.load(f)
+        except ModuleNotFoundError as e:
+            # Common case: pickle references a missing package (like surprise)
+            st.warning(f"Module required to unpickle {filename} is missing: {e}. Skipping load.")
+            return None
         except Exception as e:
-            # Print first 100 bytes for debugging
-            try:
-                with open(filename, 'rb') as f:
-                    first_bytes = f.read(100)
-                st.error(f"Failed to load {filename}: {e}. First bytes: {first_bytes}")
-            except Exception as e2:
-                st.error(f"Failed to load {filename}: {e}. Also failed to read file: {e2}")
+            # Print first 200 bytes for debugging
+            st.error(f"Failed to load {filename}: {e}. First bytes: {first_bytes[:200]}")
             return None
 
     files = [
@@ -764,9 +785,47 @@ def recommend_content_based_tmdb(movie_title, num_recommendations=5):
 
 # Collaborative filtering recommendation (using SVD)
 def recommend_collaborative(user_id):
-    if svd_model is None or movies.empty:
-        st.error("Collaborative recommendations unavailable due to missing data.")
+    if movies.empty:
+        st.error("Collaborative recommendations unavailable due to missing movie data.")
         return [], []
+
+    # If SVD model isn't available (scikit-surprise not installed or svd_model missing),
+    # fall back to a popularity-based recommender.
+    if svd_model is None:
+        try:
+            # Use user reviews to compute popularity if available
+            if os.path.exists("user_reviews.csv"):
+                reviews_df = pd.read_csv("user_reviews.csv", header=0)
+                reviews_df['rating'] = reviews_df['rating'].astype(float)
+                pop = reviews_df.groupby('movie_id').agg({'rating': ['mean', 'count']})
+                pop.columns = ['avg_rating', 'count']
+                pop['score'] = pop['avg_rating'] * np.log1p(pop['count'])
+                pop = pop.reset_index().sort_values('score', ascending=False)
+                uid = str(user_id)
+                user_rated = set(reviews_df[reviews_df['user'].astype(str) == uid]['movie_id'].astype(int).tolist())
+                recommendations = []
+                for mid in pop['movie_id'].tolist():
+                    if mid in user_rated:
+                        continue
+                    try:
+                        title = movies[movies['id'] == int(mid)]['title'].iloc[0]
+                        recommendations.append((title, fetch_poster(int(mid))))
+                    except Exception:
+                        continue
+                    if len(recommendations) >= 3:
+                        break
+                if recommendations:
+                    names, posters = zip(*recommendations)
+                    return list(names), list(posters)
+
+            # Otherwise, return top movies from movies.csv
+            top_titles = movies['title'].head(3).tolist()
+            top_posters = [fetch_poster(mid) for mid in movies['id'].head(3).tolist()]
+            return top_titles, top_posters
+        except Exception as e:
+            st.error(f"Error in popularity fallback: {e}")
+            return [], []
+
     try:
         # Get movies already rated by the user
         rated_movie_ids = set()
